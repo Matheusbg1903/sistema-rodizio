@@ -1,0 +1,8 @@
+﻿__pycache__/
+*.pyc
+rodizio.db
+rodizio_teste_script.db.bak
+dist/
+build/
+*.spec
+.vscode/
