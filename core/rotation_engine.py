@@ -1,24 +1,43 @@
 """
 Motor de geração automática do rodízio.
 
-Regra de negócio central (confirmada com o usuário do sistema):
-funcionário com `restricao != 'nenhuma'` (gestante, física ou temporária)
-NUNCA pode ser alocado em máquina `critica = True`. Em máquina não-crítica,
-qualquer funcionário do turno pode entrar.
+Regras de negócio (confirmadas com o usuário do sistema):
 
-Estratégia do algoritmo — por que processar máquinas críticas primeiro:
-o pool de funcionários "sem restrição" é o único que serve tanto para
-máquinas críticas quanto não-críticas. Se distribuíssemos na ordem em
-que a programação foi cadastrada, corremos o risco de gastar todos os
-funcionários sem restrição em máquinas não-críticas (que também aceitariam
-funcionários com restrição) e faltar gente sem restrição pra a máquina
-crítica que vem depois na lista. Processar as críticas primeiro garante
-que elas tenham prioridade sobre o recurso mais escasso.
+1. Funcionário com `restricao != 'nenhuma'` (gestante, física ou
+   temporária) NUNCA pode ser alocado em máquina `critica = True`. Em
+   máquina não-crítica, qualquer funcionário do turno pode entrar.
+
+2. ROTAÇÃO / JUSTIÇA NA ESCALA: o sistema tem memória do que já foi
+   gerado antes (consulta a tabela `alocacoes` de todos os rodízios
+   anteriores). Ao escolher quem vai pra cada máquina:
+     - Para máquinas CRÍTICAS: todo mundo elegível (sem restrição) é
+       ordenado por "há quanto tempo não pega QUALQUER máquina crítica"
+       — quem nunca pegou vai primeiro; entre quem já pegou, quem pegou
+       há mais tempo vai na frente de quem pegou recentemente. Isso
+       cria uma fila justa naturalmente: ninguém repete crítica duas
+       vezes seguidas a não ser que literalmente não sobre mais
+       ninguém elegível (situação real de escassez de pessoal).
+     - Para máquinas NÃO-críticas: mesma lógica, mas por máquina
+       específica — prioriza quem nunca trabalhou NAQUELA máquina, ou
+       que trabalhou há mais tempo.
+
+   Não existe um "banimento permanente" de repetir — com poucas pessoas
+   elegíveis e muitas vagas críticas por rodízio, um "nunca mais"
+   literal esgotaria a fila em 2-3 gerações e travaria o sistema. Por
+   isso a prioridade é por RECÊNCIA (quem está há mais tempo sem
+   passar), não uma regra rígida de "só uma vez na vida".
 
 Nenhum SQL é escrito aqui: toda leitura e escrita passa pelo repository.
 """
 
 from database import repository
+
+
+# Funcionários que nunca apareceram no histórico recebem esta "data",
+# que é anterior a qualquer timestamp real do banco — garante que eles
+# fiquem sempre à frente na fila de prioridade (nunca pegaram = máxima
+# prioridade para pegar agora).
+NUNCA_ALOCADO = ""
 
 
 class RotationEngine:
@@ -51,11 +70,19 @@ class RotationEngine:
         if rodizio is None:
             raise ValueError("Rodízio não encontrado.")
 
+        turno = rodizio["turno"]
         programacao = repository.listar_rodizio_maquinas(rodizio_id)
-        funcionarios = repository.listar_funcionarios_turno(rodizio["turno"])
+        funcionarios = repository.listar_funcionarios_turno(turno)
 
-        # Dois grupos: quem não tem restrição pode ir para qualquer máquina;
-        # quem tem restrição só pode ir para máquina não-crítica.
+        # Histórico: quando cada funcionário passou por último em
+        # QUALQUER máquina crítica, e em CADA máquina específica.
+        # Consultado uma vez só, no início — não muda durante a geração
+        # deste rodízio (o histórico é sempre de rodízios ANTERIORES).
+        historico_critica = repository.historico_ultima_maquina_critica(turno)
+        historico_por_maquina = repository.historico_ultima_vez_por_maquina(turno)
+
+        # Dois grupos: quem não tem restrição pode ir para qualquer
+        # máquina; quem tem restrição só pode ir para máquina não-crítica.
         sem_restricao = [f for f in funcionarios if f.restricao == "nenhuma"]
         com_restricao = [f for f in funcionarios if f.restricao != "nenhuma"]
 
@@ -72,13 +99,24 @@ class RotationEngine:
             necessario = item["qtd_operadores"]
 
             if item["maquina_critica"]:
-                candidatos = sem_restricao
+                candidatos = sorted(
+                    sem_restricao,
+                    key=lambda f: historico_critica.get(f.id, NUNCA_ALOCADO),
+                )
             else:
-                # não-crítica: prioriza quem tem restrição primeiro, para
-                # preservar funcionários sem restrição disponíveis para
-                # outras máquinas críticas ainda não processadas nesta
-                # mesma rodada.
-                candidatos = com_restricao + sem_restricao
+                # não-crítica: prioriza quem tem restrição primeiro (para
+                # preservar sem-restrição para outras críticas ainda não
+                # processadas), mas dentro de cada grupo, ordena por
+                # rotação — quem passou há mais tempo por ESTA máquina
+                # específica (ou nunca passou) vai na frente.
+                def chave_rotacao_maquina(funcionario):
+                    return historico_por_maquina.get(
+                        (funcionario.id, item["maquina_id"]), NUNCA_ALOCADO
+                    )
+
+                candidatos = sorted(com_restricao, key=chave_rotacao_maquina) + sorted(
+                    sem_restricao, key=chave_rotacao_maquina
+                )
 
             selecionados = candidatos[:necessario]
 
