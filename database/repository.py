@@ -628,3 +628,69 @@ def listar_alocacoes_rodizio(rodizio_id: int) -> List[dict]:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+# ---------------------------------------------------------------------------
+# Histórico de alocações — usado pelo RotationEngine para dar prioridade
+# de rodízio a quem está há mais tempo sem passar por uma máquina
+# (ou sem passar por QUALQUER máquina crítica).
+# ---------------------------------------------------------------------------
+
+
+def historico_ultima_maquina_critica(turno: int) -> dict:
+    """
+    Para cada funcionário do turno, a data (data_geracao) do rodízio mais
+    recente em que ele foi alocado em QUALQUER máquina crítica — tratando
+    todas as máquinas críticas como uma categoria só (não por máquina
+    específica), porque a regra de negócio é "não repetir crítica logo
+    em seguida", não "não repetir a MESMA crítica".
+
+    Funcionários que nunca pegaram uma máquina crítica não aparecem no
+    dict retornado — a ausência de entrada é o sinal de "nunca", que o
+    RotationEngine trata como prioridade máxima (vai primeiro na fila).
+
+    Retorna: {funcionario_id: "2026-08-17 14:22:05"}
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT a.funcionario_id, MAX(r.data_geracao) AS ultima_vez
+            FROM alocacoes a
+            JOIN rodizio_maquinas rm ON rm.id = a.rodizio_maquina_id
+            JOIN maquinas m ON m.id = rm.maquina_id
+            JOIN rodizios r ON r.id = a.rodizio_id
+            WHERE m.critica = 1 AND r.turno = ?
+            GROUP BY a.funcionario_id
+            """,
+            (turno,),
+        ).fetchall()
+        return {row["funcionario_id"]: row["ultima_vez"] for row in rows}
+    finally:
+        conn.close()
+
+
+def historico_ultima_vez_por_maquina(turno: int) -> dict:
+    """
+    Para cada par (funcionário, máquina) do turno, a data do rodízio mais
+    recente em que esse funcionário trabalhou especificamente NESSA
+    máquina. Usado para rotacionar máquinas não-críticas: prioriza quem
+    ainda não passou por aquela máquina, ou passou há mais tempo.
+
+    Retorna: {(funcionario_id, maquina_id): "2026-08-17 14:22:05"}
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT a.funcionario_id, rm.maquina_id, MAX(r.data_geracao) AS ultima_vez
+            FROM alocacoes a
+            JOIN rodizio_maquinas rm ON rm.id = a.rodizio_maquina_id
+            JOIN rodizios r ON r.id = a.rodizio_id
+            WHERE r.turno = ?
+            GROUP BY a.funcionario_id, rm.maquina_id
+            """,
+            (turno,),
+        ).fetchall()
+        return {(row["funcionario_id"], row["maquina_id"]): row["ultima_vez"] for row in rows}
+    finally:
+        conn.close()

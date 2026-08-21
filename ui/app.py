@@ -36,6 +36,7 @@ class App(ctk.CTk):
         self.title("Sistema de Rodízio")
         self.geometry("1000x700")
         self.minsize(900, 600)
+        self._aplicar_icone_janela()
 
         self.botoes_sidebar = {}
         self.tela_atual = None
@@ -43,6 +44,25 @@ class App(ctk.CTk):
         self._montar_sidebar()
         self._montar_telas()
         self._mostrar_tela("Funcionários")
+
+    def _aplicar_icone_janela(self):
+        """
+        Define o ícone da janela (barra de tarefas, barra de título,
+        Alt+Tab) — separado do ícone do .exe em si.
+
+        --icon no PyInstaller só troca o ícone do ARQUIVO .exe (o que
+        aparece no Explorer). O ícone da JANELA em tempo de execução é
+        outra coisa, controlada pelo próprio Tkinter — sem esta chamada,
+        a janela usa a folha (feather) padrão do Tk na barra de tarefas,
+        mesmo com o .exe já tendo o ícone certo.
+        """
+        import os
+        caminho_icone = theme.caminho_recurso("assets", "icone_rotacao.ico")
+        if os.path.exists(caminho_icone):
+            try:
+                self.iconbitmap(caminho_icone)
+            except Exception:
+                pass  # ambientes sem suporte a .ico (ex: Linux) não devem travar o app
 
     def _montar_logo(self, sidebar):
         """
